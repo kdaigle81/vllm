@@ -1,8 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+
 import asyncio
 import time
-from typing import AsyncGenerator, AsyncIterator, Dict, List, Optional
-from typing import Sequence as GenericSequence
-from typing import Tuple, Union, cast
+from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import Sequence as GenericSequence
+from typing import Optional, Union, cast
 
 from fastapi import Request
 
@@ -58,7 +60,7 @@ class OpenAIServingCompletion(OpenAIServing):
     async def create_completion(
         self,
         request: CompletionRequest,
-        raw_request: Request,
+        raw_request: Optional[Request] = None,
     ) -> Union[AsyncGenerator[str, None], CompletionResponse, ErrorResponse]:
         """Completion API similar to OpenAI's API.
 
@@ -111,7 +113,7 @@ class OpenAIServingCompletion(OpenAIServing):
             return self.create_error_response(str(e))
 
         # Schedule the request and get the result generator.
-        generators: List[AsyncGenerator[RequestOutput, None]] = []
+        generators: list[AsyncGenerator[RequestOutput, None]] = []
         try:
             for i, engine_prompt in enumerate(engine_prompts):
                 sampling_params: Union[SamplingParams, BeamSearchParams]
@@ -137,7 +139,7 @@ class OpenAIServingCompletion(OpenAIServing):
                                  lora_request=lora_request,
                                  prompt_adapter_request=prompt_adapter_request)
 
-                trace_headers = (await
+                trace_headers = (None if raw_request is None else await
                                  self._get_trace_headers(raw_request.headers))
 
                 if isinstance(sampling_params, BeamSearchParams):
@@ -164,7 +166,7 @@ class OpenAIServingCompletion(OpenAIServing):
 
         result_generator = merge_async_iterators(*generators)
 
-        model_name = self.models.model_name(lora_request)
+        model_name = self._get_model_name(request.model, lora_request)
         num_prompts = len(engine_prompts)
 
         # Similar to the OpenAI API, when n != best_of, we do not stream the
@@ -187,7 +189,7 @@ class OpenAIServingCompletion(OpenAIServing):
                 request_metadata=request_metadata)
 
         # Non-streaming response
-        final_res_batch: List[Optional[RequestOutput]] = [None] * num_prompts
+        final_res_batch: list[Optional[RequestOutput]] = [None] * num_prompts
         try:
             async for i, res in result_generator:
                 final_res_batch[i] = res
@@ -201,7 +203,7 @@ class OpenAIServingCompletion(OpenAIServing):
                 if final_res.prompt is None:
                     final_res.prompt = request_prompts[i]["prompt"]
 
-            final_res_batch_checked = cast(List[RequestOutput],
+            final_res_batch_checked = cast(list[RequestOutput],
                                            final_res_batch)
 
             response = self.request_output_to_completion_response(
@@ -235,7 +237,7 @@ class OpenAIServingCompletion(OpenAIServing):
     async def completion_stream_generator(
         self,
         request: CompletionRequest,
-        result_generator: AsyncIterator[Tuple[int, RequestOutput]],
+        result_generator: AsyncIterator[tuple[int, RequestOutput]],
         request_id: str,
         created_time: int,
         model_name: str,
@@ -268,7 +270,7 @@ class OpenAIServingCompletion(OpenAIServing):
                     num_prompt_tokens[prompt_idx] = len(res.prompt_token_ids)
 
                 delta_token_ids: GenericSequence[int]
-                out_logprobs: Optional[GenericSequence[Optional[Dict[
+                out_logprobs: Optional[GenericSequence[Optional[dict[
                     int, Logprob]]]]
 
                 for output in res.outputs:
@@ -379,7 +381,7 @@ class OpenAIServingCompletion(OpenAIServing):
 
     def request_output_to_completion_response(
         self,
-        final_res_batch: List[RequestOutput],
+        final_res_batch: list[RequestOutput],
         request: CompletionRequest,
         request_id: str,
         created_time: int,
@@ -387,7 +389,7 @@ class OpenAIServingCompletion(OpenAIServing):
         tokenizer: AnyTokenizer,
         request_metadata: RequestResponseMetadata,
     ) -> CompletionResponse:
-        choices: List[CompletionResponseChoice] = []
+        choices: list[CompletionResponseChoice] = []
         num_prompt_tokens = 0
         num_generated_tokens = 0
 
@@ -404,7 +406,7 @@ class OpenAIServingCompletion(OpenAIServing):
             prompt_text = final_res.prompt
 
             token_ids: GenericSequence[int]
-            out_logprobs: Optional[GenericSequence[Optional[Dict[int,
+            out_logprobs: Optional[GenericSequence[Optional[dict[int,
                                                                  Logprob]]]]
 
             for output in final_res.outputs:
@@ -478,16 +480,16 @@ class OpenAIServingCompletion(OpenAIServing):
     def _create_completion_logprobs(
         self,
         token_ids: GenericSequence[int],
-        top_logprobs: GenericSequence[Optional[Dict[int, Logprob]]],
+        top_logprobs: GenericSequence[Optional[dict[int, Logprob]]],
         num_output_top_logprobs: int,
         tokenizer: AnyTokenizer,
         initial_text_offset: int = 0,
     ) -> CompletionLogProbs:
         """Create logprobs for OpenAI Completion API."""
-        out_text_offset: List[int] = []
-        out_token_logprobs: List[Optional[float]] = []
-        out_tokens: List[str] = []
-        out_top_logprobs: List[Optional[Dict[str, float]]] = []
+        out_text_offset: list[int] = []
+        out_token_logprobs: list[Optional[float]] = []
+        out_tokens: list[str] = []
+        out_top_logprobs: list[Optional[dict[str, float]]] = []
 
         last_token_len = 0
 
@@ -522,11 +524,10 @@ class OpenAIServingCompletion(OpenAIServing):
                 out_top_logprobs.append({
                     # Convert float("-inf") to the
                     # JSON-serializable float that OpenAI uses
-                    self._get_decoded_token(
-                        top_lp[1],
-                        top_lp[0],
-                        tokenizer,
-                        return_as_token_id=self.return_tokens_as_token_ids):
+                    self._get_decoded_token(top_lp[1],
+                                            top_lp[0],
+                                            tokenizer,
+                                            return_as_token_id=self.return_tokens_as_token_ids):
                     max(top_lp[1].logprob, -9999.0)
                     for i, top_lp in enumerate(step_top_logprobs.items())
                     if num_output_top_logprobs >= i
